@@ -1,16 +1,4 @@
-from pydantic import BaseModel
-
-class MessageCreate(BaseModel):
-    text: str
-    autor: str
-
-class MessageRead(BaseModel):
-    id: int
-    text: str
-    autor: str
-
-    class Config:
-        from_attributes = True
+from pydantic import BaseModel, EmailStr
 
 
 class ProductCreate(BaseModel):
@@ -26,3 +14,26 @@ class ProductRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+
+class UserRead(BaseModel):
+    id: int
+    username: str
+    email: EmailStr
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str

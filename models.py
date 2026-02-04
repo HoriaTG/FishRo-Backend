@@ -1,14 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float
 from db import Base
 
-class MessageDB(Base):
-    __tablename__ = "messages"
-
-    id = Column(Integer, primary_key=True, index=True)
-    text = Column(String, nullable=False)
-    autor = Column(String, nullable=False)
-
-
 class ProductDB(Base):
     __tablename__ = "products"
 
@@ -16,3 +8,12 @@ class ProductDB(Base):
     name = Column(String, nullable=False)
     category = Column(String, nullable=False)
     price = Column(Float, nullable=False)
+
+
+class UserDB(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)

@@ -2,10 +2,26 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from db import Base, engine, SessionLocal
-from models import MessageDB, ProductDB
-from schemas import MessageCreate, MessageRead, ProductCreate, ProductRead
+from models import ProductDB
+from schemas import ProductCreate, ProductRead
+
+from models import UserDB
+from schemas import UserCreate, UserRead, Token
+from auth import hash_password, verify_password, create_access_token
+
+
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Fishing App - SQLite")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # 1) Cream tabelele in DB daca nu exista deja
 Base.metadata.create_all(bind=engine)
@@ -17,29 +33,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
-# 3) POST: creeaza mesaj in baza de date
-@app.post("/messages", response_model=MessageRead)
-def create_message(payload: MessageCreate, db: Session = Depends(get_db)):
-    message = MessageDB(text=payload.text, autor=payload.autor)
-    db.add(message)
-    db.commit()
-    db.refresh(message)  # dupa commit, message primeste id-ul generat de DB
-    return message
-
-# 4) GET: lista mesaje din baza de date
-@app.get("/messages", response_model=list[MessageRead])
-def get_messages(db: Session = Depends(get_db)):
-    return db.query(MessageDB).all()
-
-# 5) GET: un mesaj dupa id
-@app.get("/messages/{message_id}", response_model=MessageRead)
-def get_message_by_id(message_id: int, db: Session = Depends(get_db)):
-    message = db.query(MessageDB).filter(MessageDB.id == message_id).first()
-    if not message:
-        raise HTTPException(status_code=404, detail="Mesajul nu exista")
-    return message
-
 
 # -------------------- PRODUCTS --------------------
 
@@ -67,3 +60,26 @@ def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Produsul nu exista")
     return product
+
+
+
+@app.post("/auth/register", response_model=UserRead)
+def register(payload: UserCreate, db: Session = Depends(get_db)):
+    existing_email = db.query(UserDB).filter(UserDB.email == payload.email).first()
+    if existing_email:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    existing_username = db.query(UserDB).filter(UserDB.username == payload.username).first()
+    if existing_username:
+        raise HTTPException(status_code=400, detail="Username already taken")
+
+    user = UserDB(
+        username=payload.username,
+        email=payload.email,
+        hashed_password=hash_password(payload.password)
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
