@@ -1,18 +1,19 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from db import Base, engine, SessionLocal
-from models import ProductDB
-from schemas import ProductCreate, ProductRead
-
-from models import UserDB
-from schemas import UserCreate, UserRead, Token
-from auth import hash_password, verify_password, create_access_token
-
-
+from models import ProductDB, UserDB
+from schemas import ProductCreate, ProductRead, UserCreate, UserRead, UserLogin, Token
+from auth import hash_password, verify_password, create_access_token, decode_access_token
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+
+
 
 app = FastAPI(title="Fishing App - SQLite")
+bearer_scheme = HTTPBearer()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,10 +35,34 @@ def get_db():
     finally:
         db.close()
 
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db)
+) -> UserDB:
+    token = credentials.credentials  # tokenul fără "Bearer"
+
+    payload = decode_access_token(token)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user_id = int(payload["sub"])
+    user = db.query(UserDB).filter(UserDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
+
+
+
+
 # -------------------- PRODUCTS --------------------
 
 @app.post("/products", response_model=ProductRead)
-def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
+def create_product(
+    payload: ProductCreate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
     product = ProductDB(
         name=payload.name,
         category=payload.category,
@@ -47,6 +72,7 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(product)
     return product
+
 
 
 @app.get("/products", response_model=list[ProductRead])
@@ -83,3 +109,33 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     return user
+
+
+
+@app.post("/auth/login", response_model=Token)
+def login(payload: UserLogin, db: Session = Depends(get_db)):
+    # 1. căutăm user-ul după email
+    user = db.query(UserDB).filter(UserDB.email == payload.email).first()
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    # 2. verificăm parola
+    if not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    # 3. creăm token-ul
+    access_token = create_access_token(
+        data={"sub": str(user.id)}
+    )
+
+    # 4. îl returnăm
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+
+@app.get("/auth/me", response_model=UserRead)
+def me(current_user: UserDB = Depends(get_current_user)):
+    return current_user
