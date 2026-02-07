@@ -53,6 +53,19 @@ def get_current_user(
     return user
 
 
+def require_admin(current_user: UserDB = Depends(get_current_user)) -> UserDB:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    return current_user
+
+
+def require_moderator_or_admin(current_user: UserDB = Depends(get_current_user)) -> UserDB:
+    if current_user.role not in ["moderator", "admin"]:
+        raise HTTPException(status_code=403, detail="Moderator or Admin only")
+    return current_user
+
+
+
 
 
 # -------------------- PRODUCTS --------------------
@@ -61,7 +74,7 @@ def get_current_user(
 def create_product(
     payload: ProductCreate,
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    admin_user: UserDB = Depends(require_admin)
 ):
     product = ProductDB(
         name=payload.name,
@@ -102,7 +115,8 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     user = UserDB(
         username=payload.username,
         email=payload.email,
-        hashed_password=hash_password(payload.password)
+        hashed_password=hash_password(payload.password),
+        role="user"
     )
 
     db.add(user)
@@ -126,7 +140,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 
     # 3. creăm token-ul
     access_token = create_access_token(
-        data={"sub": str(user.id)}
+        data={"sub": str(user.id), "role": user.role}
     )
 
     # 4. îl returnăm
