@@ -9,8 +9,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 
-
-
 app = FastAPI(title="Fishing App - SQLite")
 bearer_scheme = HTTPBearer()
 
@@ -74,17 +72,37 @@ def require_moderator_or_admin(current_user: UserDB = Depends(get_current_user))
 def create_product(
     payload: ProductCreate,
     db: Session = Depends(get_db),
-    admin_user: UserDB = Depends(require_admin)
+    current_user: UserDB = Depends(get_current_user)
 ):
+    # cautăm produsul după cod
+    existing = db.query(ProductDB).filter(ProductDB.code == payload.code).first()
+
+    if existing:
+        # ✅ produsul există -> creștem cantitatea
+        existing.quantity += payload.quantity
+
+        # opțional: update și la info (depinde cum vrei tu)
+        existing.name = payload.name
+        existing.category = payload.category
+        existing.price = payload.price
+
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    # ❌ nu există -> creare produs nou
     product = ProductDB(
+        code=payload.code,
         name=payload.name,
         category=payload.category,
-        price=payload.price
+        price=payload.price,
+        quantity=payload.quantity
     )
     db.add(product)
     db.commit()
     db.refresh(product)
     return product
+
 
 
 

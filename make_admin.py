@@ -1,7 +1,7 @@
 from db import SessionLocal
 from models import UserDB
 
-EMAIL = "user@test.com"
+EMAIL = "admin@fishro.com"
 
 db = SessionLocal()
 try:
