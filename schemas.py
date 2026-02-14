@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
+from typing import Optional
 
 
 class ProductCreate(BaseModel):
@@ -7,6 +8,9 @@ class ProductCreate(BaseModel):
     category: str
     price: float
     quantity: int = 0  # default
+    description: str | None = None
+    tech_details: str | None = None
+    video_url: str | None = None
 
 class ProductRead(BaseModel):
     id: int
@@ -15,6 +19,9 @@ class ProductRead(BaseModel):
     category: str
     price: float
     quantity: int
+    description: str | None = None
+    tech_details: str | None = None
+    video_url: str | None = None
 
     class Config:
         from_attributes = True
@@ -42,3 +49,13 @@ class Token(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    price: Optional[float] = None
+    quantity: Optional[int] = None
+    description: Optional[str] = None
+    tech_details: Optional[str] = None
+    video_url: Optional[str] = None

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from db import Base, engine, SessionLocal
 from models import ProductDB, UserDB
-from schemas import ProductCreate, ProductRead, UserCreate, UserRead, UserLogin, Token
+from schemas import ProductCreate, ProductRead, ProductUpdate, UserCreate, UserRead, UserLogin, Token
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -86,6 +86,14 @@ def create_product(
         existing.category = payload.category
         existing.price = payload.price
 
+        if payload.description is not None:
+            existing.description = payload.description
+        if payload.tech_details is not None:
+            existing.tech_details = payload.tech_details
+        if payload.video_url is not None:
+            existing.video_url = payload.video_url
+
+
         db.commit()
         db.refresh(existing)
         return existing
@@ -96,7 +104,11 @@ def create_product(
         name=payload.name,
         category=payload.category,
         price=payload.price,
-        quantity=payload.quantity
+        quantity=payload.quantity,
+        description=payload.description,
+        tech_details=payload.tech_details,
+        video_url=payload.video_url
+
     )
     db.add(product)
     db.commit()
@@ -117,6 +129,49 @@ def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Produsul nu exista")
     return product
+
+
+@app.patch("/products/{product_id}", response_model=ProductRead)
+def update_product(
+    product_id: int,
+    payload: ProductUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    # 🔒 doar admin
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produs inexistent")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    for key, value in data.items():
+        setattr(product, key, value)
+
+    db.commit()
+    db.refresh(product)
+
+    return product
+
+@app.delete("/products/{product_id}")
+def delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    p = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Produs inexistent")
+
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
 
 
 

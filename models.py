@@ -10,6 +10,9 @@ class ProductDB(Base):
     category = Column(String, nullable=False)
     price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False, default=0)  # default 0
+    description = Column(String, nullable=True)
+    tech_details = Column(String, nullable=True)  # JSON string (ex: [["Lungime","2.7 m"], ...])
+    video_url = Column(String, nullable=True)
 
 
 class UserDB(Base):
