@@ -10,7 +10,7 @@ The platform provides features such as user authentication (login, logout, regis
 The backend of FishRo is implemented using FastAPI and provides the REST API used by the platform.
 It manages user authentication, product data, and communication with the database.
 
-Main functionalities
+**Main functionalities**
 
 User authentication
 
