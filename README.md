@@ -14,60 +14,60 @@ It manages user authentication, product data, and communication with the databas
 
 - User authentication
 
-user registration
+- user registration
 
-login and logout
+- login and logout
 
-JWT-based authentication
+- JWT-based authentication
 
-Authorization
+**Authorization:**
 
-role-based access (user, moderator, admin)
+- role-based access (user, moderator, admin)
 
-protected endpoints using Bearer tokens
+- protected endpoints using Bearer tokens
 
-Product management
+**Product management:**
 
-create, update, delete products (admin)
+- create, update, delete products (admin)
 
-retrieve product list
+- retrieve product list
 
-retrieve product details
+- retrieve product details
 
-Product filtering and search
+**Product filtering and search:**
 
-filtering products based on preferences
+- filtering products based on preferences
 
-search functionality for products
+- search functionality for products
 
-Database management
+**Database management:**
 
-relational database using SQLite
+- relational database using SQLite
 
-ORM with SQLAlchemy
+- ORM with SQLAlchemy
 
-Data validation
+**Data validation:**
 
-request and response validation using Pydantic schemas
+- request and response validation using Pydantic schemas
 
-API security
+**API security:**
 
-password hashing with bcrypt
+- password hashing with bcrypt
 
-JWT token authentication
+- JWT token authentication
 
-CORS configuration for frontend communication
+- CORS configuration for frontend communication
 
-Technologies
+*Technologies:*
 
-FastAPI
+- FastAPI
 
-SQLAlchemy
+- SQLAlchemy
 
-SQLite
+- SQLite
 
-Pydantic
+- Pydantic
 
-JWT (python-jose)
+- JWT (python-jose)
 
-Passlib / bcrypt
+- Passlib / bcrypt
