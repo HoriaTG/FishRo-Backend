@@ -58,7 +58,7 @@ It manages user authentication, product data, and communication with the databas
 
 - CORS configuration for frontend communication
 
-*Technologies:*
+# Technologies
 
 - FastAPI
 
