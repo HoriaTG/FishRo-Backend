@@ -1,22 +1,37 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, Literal
+
+ProductCategory = Literal[
+    "undita",
+    "lanseta",
+    "mulineta",
+    "carlig",
+    "plumb",
+    "nailon",
+    "echipamente",
+    "momeli",
+    "diverse",
+    "nada",
+    "plute",
+]
 
 
 class ProductCreate(BaseModel):
-    code: str = Field(..., min_length=1)   # îl validăm ca string
+    code: str = Field(..., min_length=1)
     name: str
-    category: str
+    category: ProductCategory
     price: float
-    quantity: int = 0  # default
+    quantity: int = 0
     description: str | None = None
     tech_details: str | None = None
     video_url: str | None = None
+
 
 class ProductRead(BaseModel):
     id: int
     code: str
     name: str
-    category: str
+    category: ProductCategory
     price: float
     quantity: int
     description: str | None = None
@@ -32,6 +47,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
 
+
 class UserRead(BaseModel):
     id: int
     username: str
@@ -40,6 +56,7 @@ class UserRead(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 class Token(BaseModel):
     access_token: str
@@ -53,7 +70,7 @@ class UserLogin(BaseModel):
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
-    category: Optional[str] = None
+    category: Optional[ProductCategory] = None
     price: Optional[float] = None
     quantity: Optional[int] = None
     description: Optional[str] = None
