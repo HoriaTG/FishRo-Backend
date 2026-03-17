@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Literal
 
+
 ProductCategory = Literal[
     "undita",
     "lanseta",
@@ -76,3 +77,36 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = None
     tech_details: Optional[str] = None
     video_url: Optional[str] = None
+
+
+class OrderCreateItem(BaseModel):
+    product_id: int
+    quantity: int
+
+
+class OrderCreate(BaseModel):
+    items: list[OrderCreateItem]
+
+
+class OrderItemRead(BaseModel):
+    id: int
+    product_id: int
+    product_name: str
+    product_code: str
+    unit_price: float
+    quantity: int
+    line_total: float
+
+    class Config:
+        from_attributes = True
+
+
+class OrderRead(BaseModel):
+    id: int
+    order_number: str
+    user_id: int
+    total: float
+    items: list[OrderItemRead]
+
+    class Config:
+        from_attributes = True

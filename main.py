@@ -1,9 +1,20 @@
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import datetime
 
 from db import Base, engine, SessionLocal
-from models import ProductDB, UserDB
-from schemas import ProductCreate, ProductRead, ProductUpdate, UserCreate, UserRead, UserLogin, Token
+from models import ProductDB, UserDB, OrderDB, OrderItemDB
+from schemas import (
+    ProductCreate,
+    ProductRead,
+    ProductUpdate,
+    UserCreate,
+    UserRead,
+    UserLogin,
+    Token,
+    OrderCreate,
+    OrderRead,
+)
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -11,7 +22,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 app = FastAPI(title="Fishing App - SQLite")
 bearer_scheme = HTTPBearer()
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,11 +31,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# 1) Cream tabelele in DB daca nu exista deja
 Base.metadata.create_all(bind=engine)
 
-# 2) Dependency: ne da o sesiune DB pentru fiecare request
+
 def get_db():
     db = SessionLocal()
     try:
@@ -33,12 +41,12 @@ def get_db():
     finally:
         db.close()
 
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db)
 ) -> UserDB:
-    token = credentials.credentials  # tokenul fără "Bearer"
-
+    token = credentials.credentials
     payload = decode_access_token(token)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -63,7 +71,8 @@ def require_moderator_or_admin(current_user: UserDB = Depends(get_current_user))
     return current_user
 
 
-
+def generate_order_number() -> str:
+    return f"FR-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
 
 # -------------------- PRODUCTS --------------------
@@ -74,14 +83,10 @@ def create_product(
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user)
 ):
-    # cautăm produsul după cod
     existing = db.query(ProductDB).filter(ProductDB.code == payload.code).first()
 
     if existing:
-        # ✅ produsul există -> creștem cantitatea
         existing.quantity += payload.quantity
-
-        # opțional: update și la info (depinde cum vrei tu)
         existing.name = payload.name
         existing.category = payload.category
         existing.price = payload.price
@@ -93,12 +98,10 @@ def create_product(
         if payload.video_url is not None:
             existing.video_url = payload.video_url
 
-
         db.commit()
         db.refresh(existing)
         return existing
 
-    # ❌ nu există -> creare produs nou
     product = ProductDB(
         code=payload.code,
         name=payload.name,
@@ -108,14 +111,11 @@ def create_product(
         description=payload.description,
         tech_details=payload.tech_details,
         video_url=payload.video_url
-
     )
     db.add(product)
     db.commit()
     db.refresh(product)
     return product
-
-
 
 
 @app.get("/products", response_model=list[ProductRead])
@@ -138,7 +138,6 @@ def update_product(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    # 🔒 doar admin
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
 
@@ -155,6 +154,7 @@ def update_product(
     db.refresh(product)
 
     return product
+
 
 @app.delete("/products/{product_id}")
 def delete_product(
@@ -174,6 +174,7 @@ def delete_product(
     return {"ok": True}
 
 
+# -------------------- AUTH --------------------
 
 @app.post("/auth/register", response_model=UserRead)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
@@ -198,25 +199,20 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     return user
 
 
-
 @app.post("/auth/login", response_model=Token)
 def login(payload: UserLogin, db: Session = Depends(get_db)):
-    # 1. căutăm user-ul după email
     user = db.query(UserDB).filter(UserDB.email == payload.email).first()
 
     if not user:
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # 2. verificăm parola
     if not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # 3. creăm token-ul
     access_token = create_access_token(
         data={"sub": str(user.id), "role": user.role}
     )
 
-    # 4. îl returnăm
     return {
         "access_token": access_token,
         "token_type": "bearer"
@@ -226,3 +222,91 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 @app.get("/auth/me", response_model=UserRead)
 def me(current_user: UserDB = Depends(get_current_user)):
     return current_user
+
+
+# -------------------- ORDERS --------------------
+
+@app.post("/orders", response_model=OrderRead)
+def create_order(
+    payload: OrderCreate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Cosul este gol")
+
+    order = OrderDB(
+        order_number=generate_order_number(),
+        user_id=current_user.id,
+        total=0
+    )
+    db.add(order)
+    db.flush()
+
+    total = 0
+
+    for item in payload.items:
+        product = db.query(ProductDB).filter(ProductDB.id == item.product_id).first()
+
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Produsul cu id {item.product_id} nu exista"
+            )
+
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cantitate invalida pentru produsul {product.name}"
+            )
+
+        if product.quantity < item.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Stoc insuficient pentru produsul {product.name}"
+            )
+
+        line_total = product.price * item.quantity
+
+        order_item = OrderItemDB(
+            order_id=order.id,
+            product_id=product.id,
+            product_name=product.name,
+            product_code=product.code,
+            unit_price=product.price,
+            quantity=item.quantity,
+            line_total=line_total,
+        )
+        db.add(order_item)
+
+        product.quantity -= item.quantity
+        total += line_total
+
+    order.total = total
+    db.commit()
+    db.refresh(order)
+
+    return order
+
+
+@app.get("/orders/my", response_model=list[OrderRead])
+def get_my_orders(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    orders = (
+        db.query(OrderDB)
+        .filter(OrderDB.user_id == current_user.id)
+        .order_by(OrderDB.id.desc())
+        .all()
+    )
+    return orders
+
+
+@app.get("/orders", response_model=list[OrderRead])
+def get_all_orders(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(require_moderator_or_admin)
+):
+    orders = db.query(OrderDB).order_by(OrderDB.id.desc()).all()
+    return orders
