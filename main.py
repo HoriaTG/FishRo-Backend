@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy.orm import Session, joinedload
+from datetime import datetime, timezone
 
 from db import Base, engine, SessionLocal
 from models import ProductDB, UserDB, OrderDB, OrderItemDB
@@ -72,11 +72,10 @@ def require_moderator_or_admin(current_user: UserDB = Depends(get_current_user))
 
 
 def generate_order_number() -> str:
-    return f"FR-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    return f"RO-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
 
 # -------------------- PRODUCTS --------------------
-
 @app.post("/products", response_model=ProductRead)
 def create_product(
     payload: ProductCreate,
@@ -175,7 +174,6 @@ def delete_product(
 
 
 # -------------------- AUTH --------------------
-
 @app.post("/auth/register", response_model=UserRead)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
     existing_email = db.query(UserDB).filter(UserDB.email == payload.email).first()
@@ -225,7 +223,6 @@ def me(current_user: UserDB = Depends(get_current_user)):
 
 
 # -------------------- ORDERS --------------------
-
 @app.post("/orders", response_model=OrderRead)
 def create_order(
     payload: OrderCreate,
@@ -238,7 +235,8 @@ def create_order(
     order = OrderDB(
         order_number=generate_order_number(),
         user_id=current_user.id,
-        total=0
+        total=0,
+        created_at=datetime.utcnow()
     )
     db.add(order)
     db.flush()
@@ -284,9 +282,15 @@ def create_order(
 
     order.total = total
     db.commit()
-    db.refresh(order)
 
-    return order
+    saved_order = (
+        db.query(OrderDB)
+        .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
+        .filter(OrderDB.id == order.id)
+        .first()
+    )
+
+    return saved_order
 
 
 @app.get("/orders/my", response_model=list[OrderRead])
@@ -296,6 +300,7 @@ def get_my_orders(
 ):
     orders = (
         db.query(OrderDB)
+        .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
         .filter(OrderDB.user_id == current_user.id)
         .order_by(OrderDB.id.desc())
         .all()
@@ -308,5 +313,35 @@ def get_all_orders(
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(require_moderator_or_admin)
 ):
-    orders = db.query(OrderDB).order_by(OrderDB.id.desc()).all()
+    orders = (
+        db.query(OrderDB)
+        .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
+        .order_by(OrderDB.id.desc())
+        .all()
+    )
     return orders
+
+
+@app.get("/orders/{order_id}", response_model=OrderRead)
+def get_order_by_id(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    order = (
+        db.query(OrderDB)
+        .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
+        .filter(OrderDB.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Comanda nu exista")
+
+    is_staff = current_user.role in ["moderator", "admin"]
+    is_owner = order.user_id == current_user.id
+
+    if not is_staff and not is_owner:
+        raise HTTPException(status_code=403, detail="Nu ai acces la aceasta comanda")
+
+    return order

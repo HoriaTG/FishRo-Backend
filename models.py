@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from db import Base
 
@@ -34,10 +34,11 @@ class OrderDB(Base):
     order_number = Column(String, unique=True, index=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     total = Column(Float, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=True)
 
     user = relationship("UserDB")
-    items = relationship("OrderItemDB", back_populates="order", cascade="all, delete-orphan")
-
+    items = relationship("OrderItemDB", back_populates="order")
+    
 
 class OrderItemDB(Base):
     __tablename__ = "order_items"

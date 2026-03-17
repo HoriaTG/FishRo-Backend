@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Literal
+from datetime import datetime
 
 
 ProductCategory = Literal[
@@ -106,6 +107,8 @@ class OrderRead(BaseModel):
     order_number: str
     user_id: int
     total: float
+    created_at: datetime | None = None
+    user: UserRead | None = None
     items: list[OrderItemRead]
 
     class Config:
