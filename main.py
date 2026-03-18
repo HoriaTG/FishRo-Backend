@@ -1,9 +1,9 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
-from datetime import datetime, timezone
+from datetime import datetime
 
 from db import Base, engine, SessionLocal
-from models import ProductDB, UserDB, OrderDB, OrderItemDB
+from models import ProductDB, UserDB, OrderDB, OrderItemDB, CartItemDB
 from schemas import (
     ProductCreate,
     ProductRead,
@@ -12,8 +12,11 @@ from schemas import (
     UserRead,
     UserLogin,
     Token,
-    OrderCreate,
     OrderRead,
+    CartItemAdd,
+    CartItemUpdate,
+    CartItemRead,
+    CartRead,
 )
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,9 +28,10 @@ bearer_scheme = HTTPBearer()
 
 app.add_middleware(
     CORSMiddleware,
-        allow_origins=[
+    allow_origins=[
         "http://localhost:4173",
         "http://192.168.1.135:4173",
+        "http://127.0.0.1:4173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -76,6 +80,53 @@ def require_moderator_or_admin(current_user: UserDB = Depends(get_current_user))
 
 def generate_order_number() -> str:
     return f"RO-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+
+
+def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
+    cart_items = (
+        db.query(CartItemDB)
+        .options(joinedload(CartItemDB.product))
+        .filter(CartItemDB.user_id == current_user.id)
+        .all()
+    )
+
+    changed = False
+    result_items = []
+    total = 0.0
+
+    for item in cart_items:
+        product = item.product
+
+        if not product or product.quantity <= 0:
+            db.delete(item)
+            changed = True
+            continue
+
+        if item.quantity > product.quantity:
+            item.quantity = product.quantity
+            changed = True
+
+        line_total = product.price * item.quantity
+        total += line_total
+
+        result_items.append(
+            CartItemRead(
+                id=item.id,
+                product_id=product.id,
+                product_name=product.name,
+                product_code=product.code,
+                unit_price=product.price,
+                quantity=item.quantity,
+                stock=product.quantity,
+                image_url=f"/images/products/{product.code}.jpg",
+                unavailable=False,
+            )
+        )
+
+    if changed:
+        db.commit()
+
+    return CartRead(items=result_items, total=total)
 
 
 # -------------------- PRODUCTS --------------------
@@ -225,14 +276,139 @@ def me(current_user: UserDB = Depends(get_current_user)):
     return current_user
 
 
-# -------------------- ORDERS --------------------
-@app.post("/orders", response_model=OrderRead)
-def create_order(
-    payload: OrderCreate,
+# -------------------- CART --------------------
+@app.get("/cart", response_model=CartRead)
+def get_cart(
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user)
 ):
-    if not payload.items:
+    return build_cart_response(db, current_user)
+
+
+@app.post("/cart/items", response_model=CartRead)
+def add_cart_item(
+    payload: CartItemAdd,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    product = db.query(ProductDB).filter(ProductDB.id == payload.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produsul nu exista")
+
+    if product.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Produs indisponibil")
+
+    qty = max(1, payload.quantity)
+
+    existing = (
+        db.query(CartItemDB)
+        .filter(
+            CartItemDB.user_id == current_user.id,
+            CartItemDB.product_id == payload.product_id
+        )
+        .first()
+    )
+
+    if existing:
+        existing.quantity = min(existing.quantity + qty, product.quantity)
+    else:
+        db.add(
+            CartItemDB(
+                user_id=current_user.id,
+                product_id=payload.product_id,
+                quantity=min(qty, product.quantity),
+            )
+        )
+
+    db.commit()
+    return build_cart_response(db, current_user)
+
+
+@app.patch("/cart/items/{product_id}", response_model=CartRead)
+def update_cart_item(
+    product_id: int,
+    payload: CartItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    item = (
+        db.query(CartItemDB)
+        .filter(
+            CartItemDB.user_id == current_user.id,
+            CartItemDB.product_id == product_id
+        )
+        .first()
+    )
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Produsul nu este in cos")
+
+    product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+    if not product:
+        db.delete(item)
+        db.commit()
+        return build_cart_response(db, current_user)
+
+    if payload.quantity <= 0:
+        db.delete(item)
+        db.commit()
+        return build_cart_response(db, current_user)
+
+    item.quantity = min(payload.quantity, max(0, product.quantity))
+
+    if item.quantity <= 0:
+        db.delete(item)
+
+    db.commit()
+    return build_cart_response(db, current_user)
+
+
+@app.delete("/cart/items/{product_id}", response_model=CartRead)
+def delete_cart_item(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    item = (
+        db.query(CartItemDB)
+        .filter(
+            CartItemDB.user_id == current_user.id,
+            CartItemDB.product_id == product_id
+        )
+        .first()
+    )
+
+    if item:
+        db.delete(item)
+        db.commit()
+
+    return build_cart_response(db, current_user)
+
+
+@app.delete("/cart/clear", response_model=CartRead)
+def clear_cart_endpoint(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    db.query(CartItemDB).filter(CartItemDB.user_id == current_user.id).delete()
+    db.commit()
+    return CartRead(items=[], total=0.0)
+
+
+# -------------------- ORDERS --------------------
+@app.post("/orders", response_model=OrderRead)
+def create_order(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user)
+):
+    cart_items = (
+        db.query(CartItemDB)
+        .options(joinedload(CartItemDB.product))
+        .filter(CartItemDB.user_id == current_user.id)
+        .all()
+    )
+
+    if not cart_items:
         raise HTTPException(status_code=400, detail="Cosul este gol")
 
     order = OrderDB(
@@ -244,30 +420,27 @@ def create_order(
     db.add(order)
     db.flush()
 
-    total = 0
+    total = 0.0
+    items_to_delete = []
 
-    for item in payload.items:
-        product = db.query(ProductDB).filter(ProductDB.id == item.product_id).first()
+    for cart_item in cart_items:
+        product = cart_item.product
 
         if not product:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Produsul cu id {item.product_id} nu exista"
-            )
+            items_to_delete.append(cart_item)
+            continue
 
-        if item.quantity <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cantitate invalida pentru produsul {product.name}"
-            )
+        if cart_item.quantity <= 0:
+            items_to_delete.append(cart_item)
+            continue
 
-        if product.quantity < item.quantity:
+        if product.quantity < cart_item.quantity:
             raise HTTPException(
                 status_code=400,
                 detail=f"Stoc insuficient pentru produsul {product.name}"
             )
 
-        line_total = product.price * item.quantity
+        line_total = product.price * cart_item.quantity
 
         order_item = OrderItemDB(
             order_id=order.id,
@@ -275,15 +448,20 @@ def create_order(
             product_name=product.name,
             product_code=product.code,
             unit_price=product.price,
-            quantity=item.quantity,
+            quantity=cart_item.quantity,
             line_total=line_total,
         )
         db.add(order_item)
 
-        product.quantity -= item.quantity
+        product.quantity -= cart_item.quantity
         total += line_total
+        items_to_delete.append(cart_item)
 
     order.total = total
+
+    for item in items_to_delete:
+        db.delete(item)
+
     db.commit()
 
     saved_order = (

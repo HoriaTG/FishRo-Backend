@@ -113,3 +113,32 @@ class OrderRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CartItemAdd(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+
+class CartItemUpdate(BaseModel):
+    quantity: int
+
+
+class CartItemRead(BaseModel):
+    id: int
+    product_id: int
+    product_name: str
+    product_code: str
+    unit_price: float
+    quantity: int
+    stock: int
+    image_url: str | None = None
+    unavailable: bool
+
+    class Config:
+        from_attributes = True
+
+
+class CartRead(BaseModel):
+    items: list[CartItemRead]
+    total: float
