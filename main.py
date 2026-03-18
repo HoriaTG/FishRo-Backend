@@ -1,27 +1,44 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 
-from db import Base, engine, SessionLocal
-from models import ProductDB, UserDB, OrderDB, OrderItemDB, CartItemDB
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
+
+from auth import create_access_token, decode_access_token, hash_password, verify_password
+from db import Base, SessionLocal, engine
+
+from models import (
+    CartItemDB,
+    OrderDB,
+    OrderItemDB,
+    ProductDB,
+    TicketDB,
+    TicketMessageDB,
+    TicketReadStateDB,
+    UserDB,
+)
 from schemas import (
+    CartItemAdd,
+    CartItemRead,
+    CartItemUpdate,
+    CartRead,
+    OrderRead,
     ProductCreate,
     ProductRead,
     ProductUpdate,
-    UserCreate,
-    UserRead,
-    UserLogin,
+    TicketCreate,
+    TicketDetailRead,
+    TicketListRead,
+    TicketMessageCreate,
+    TicketMessageRead,
+    TicketUnreadCountRead,
     Token,
-    OrderRead,
-    CartItemAdd,
-    CartItemUpdate,
-    CartItemRead,
-    CartRead,
+    UserCreate,
+    UserLogin,
+    UserRead,
 )
-from auth import hash_password, verify_password, create_access_token, decode_access_token
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
 
 app = FastAPI(title="Fishing App - SQLite")
 bearer_scheme = HTTPBearer()
@@ -51,7 +68,7 @@ def get_db():
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> UserDB:
     token = credentials.credentials
     payload = decode_access_token(token)
@@ -80,6 +97,10 @@ def require_moderator_or_admin(current_user: UserDB = Depends(get_current_user))
 
 def generate_order_number() -> str:
     return f"RO-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+
+
+def generate_ticket_number() -> str:
+    return f"TCK-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
 
 def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
@@ -129,12 +150,165 @@ def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
     return CartRead(items=result_items, total=total)
 
 
+def can_access_ticket(ticket: TicketDB, current_user: UserDB) -> bool:
+    if current_user.role in ["moderator", "admin"]:
+        return True
+    return ticket.user_id == current_user.id
+
+
+def get_ticket_or_404(ticket_id: int, db: Session) -> TicketDB:
+    ticket = (
+        db.query(TicketDB)
+        .options(
+            joinedload(TicketDB.user),
+            joinedload(TicketDB.messages).joinedload(TicketMessageDB.sender),
+        )
+        .filter(TicketDB.id == ticket_id)
+        .first()
+    )
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Tichetul nu exista")
+    return ticket
+
+
+def serialize_ticket_message(message: TicketMessageDB) -> TicketMessageRead:
+    return TicketMessageRead(
+        id=message.id,
+        ticket_id=message.ticket_id,
+        sender_id=message.sender_id,
+        sender_username=message.sender.username if message.sender else "-",
+        sender_role=message.sender.role if message.sender else "user",
+        message=message.message,
+        created_at=message.created_at,
+    )
+
+
+def ticket_has_unread_for_user(ticket: TicketDB, current_user: UserDB, db: Session) -> bool:
+    latest_message = (
+        db.query(TicketMessageDB)
+        .filter(TicketMessageDB.ticket_id == ticket.id)
+        .order_by(TicketMessageDB.id.desc())
+        .first()
+    )
+
+    if not latest_message:
+        return False
+
+    if latest_message.sender_id == current_user.id:
+        return False
+
+    state = (
+        db.query(TicketReadStateDB)
+        .filter(
+            TicketReadStateDB.ticket_id == ticket.id,
+            TicketReadStateDB.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if not state or state.last_read_message_id is None:
+        return True
+
+    return state.last_read_message_id < latest_message.id
+
+
+def serialize_ticket_list(ticket: TicketDB, current_user: UserDB, db: Session) -> TicketListRead:
+    return TicketListRead(
+        id=ticket.id,
+        ticket_number=ticket.ticket_number,
+        user_id=ticket.user_id,
+        username=ticket.user.username if ticket.user else "-",
+        category=ticket.category,
+        status=ticket.status,
+        created_at=ticket.created_at,
+        updated_at=ticket.updated_at,
+        last_message_at=ticket.last_message_at,
+        has_unread=ticket_has_unread_for_user(ticket, current_user, db),
+    )
+
+
+def serialize_ticket_detail(ticket: TicketDB) -> TicketDetailRead:
+    return TicketDetailRead(
+        id=ticket.id,
+        ticket_number=ticket.ticket_number,
+        user_id=ticket.user_id,
+        username=ticket.user.username if ticket.user else "-",
+        category=ticket.category,
+        status=ticket.status,
+        created_at=ticket.created_at,
+        updated_at=ticket.updated_at,
+        last_message_at=ticket.last_message_at,
+        messages=[serialize_ticket_message(message) for message in ticket.messages],
+    )
+
+
+def get_or_create_read_state(ticket_id: int, user_id: int, db: Session) -> TicketReadStateDB:
+    state = (
+        db.query(TicketReadStateDB)
+        .filter(
+            TicketReadStateDB.ticket_id == ticket_id,
+            TicketReadStateDB.user_id == user_id,
+        )
+        .first()
+    )
+    if state:
+        return state
+
+    state = TicketReadStateDB(ticket_id=ticket_id, user_id=user_id, last_read_message_id=None)
+    db.add(state)
+    db.flush()
+    return state
+
+
+def mark_ticket_as_read(ticket: TicketDB, current_user: UserDB, db: Session) -> None:
+    if not ticket.messages:
+        return
+
+    state = get_or_create_read_state(ticket.id, current_user.id, db)
+    latest_message_id = max(message.id for message in ticket.messages)
+    if state.last_read_message_id != latest_message_id:
+        state.last_read_message_id = latest_message_id
+        db.commit()
+
+
+def count_unread_tickets_for_user(db: Session, current_user: UserDB) -> int:
+    latest_subquery = (
+        db.query(
+            TicketMessageDB.ticket_id.label("ticket_id"),
+            func.max(TicketMessageDB.id).label("latest_message_id"),
+        )
+        .group_by(TicketMessageDB.ticket_id)
+        .subquery()
+    )
+
+    query = (
+        db.query(TicketDB.id)
+        .join(latest_subquery, latest_subquery.c.ticket_id == TicketDB.id)
+        .join(TicketMessageDB, TicketMessageDB.id == latest_subquery.c.latest_message_id)
+        .outerjoin(
+            TicketReadStateDB,
+            (TicketReadStateDB.ticket_id == TicketDB.id)
+            & (TicketReadStateDB.user_id == current_user.id),
+        )
+        .filter(TicketMessageDB.sender_id != current_user.id)
+        .filter(
+            (TicketReadStateDB.last_read_message_id.is_(None))
+            | (TicketReadStateDB.last_read_message_id < TicketMessageDB.id)
+        )
+    )
+
+    if current_user.role == "user":
+        query = query.filter(TicketDB.user_id == current_user.id)
+
+    return query.distinct().count()
+
+
 # -------------------- PRODUCTS --------------------
 @app.post("/products", response_model=ProductRead)
 def create_product(
     payload: ProductCreate,
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     existing = db.query(ProductDB).filter(ProductDB.code == payload.code).first()
 
@@ -163,7 +337,7 @@ def create_product(
         quantity=payload.quantity,
         description=payload.description,
         tech_details=payload.tech_details,
-        video_url=payload.video_url
+        video_url=payload.video_url,
     )
     db.add(product)
     db.commit()
@@ -218,11 +392,11 @@ def delete_product(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
 
-    p = db.query(ProductDB).filter(ProductDB.id == product_id).first()
-    if not p:
+    product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+    if not product:
         raise HTTPException(status_code=404, detail="Produs inexistent")
 
-    db.delete(p)
+    db.delete(product)
     db.commit()
     return {"ok": True}
 
@@ -242,7 +416,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         username=payload.username,
         email=payload.email,
         hashed_password=hash_password(payload.password),
-        role="user"
+        role="user",
     )
 
     db.add(user)
@@ -261,13 +435,11 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     if not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    access_token = create_access_token(
-        data={"sub": str(user.id), "role": user.role}
-    )
+    access_token = create_access_token(data={"sub": str(user.id), "role": user.role})
 
     return {
         "access_token": access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
 
 
@@ -280,7 +452,7 @@ def me(current_user: UserDB = Depends(get_current_user)):
 @app.get("/cart", response_model=CartRead)
 def get_cart(
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     return build_cart_response(db, current_user)
 
@@ -289,7 +461,7 @@ def get_cart(
 def add_cart_item(
     payload: CartItemAdd,
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     product = db.query(ProductDB).filter(ProductDB.id == payload.product_id).first()
     if not product:
@@ -302,10 +474,7 @@ def add_cart_item(
 
     existing = (
         db.query(CartItemDB)
-        .filter(
-            CartItemDB.user_id == current_user.id,
-            CartItemDB.product_id == payload.product_id
-        )
+        .filter(CartItemDB.user_id == current_user.id, CartItemDB.product_id == payload.product_id)
         .first()
     )
 
@@ -329,14 +498,11 @@ def update_cart_item(
     product_id: int,
     payload: CartItemUpdate,
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     item = (
         db.query(CartItemDB)
-        .filter(
-            CartItemDB.user_id == current_user.id,
-            CartItemDB.product_id == product_id
-        )
+        .filter(CartItemDB.user_id == current_user.id, CartItemDB.product_id == product_id)
         .first()
     )
 
@@ -367,14 +533,11 @@ def update_cart_item(
 def delete_cart_item(
     product_id: int,
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     item = (
         db.query(CartItemDB)
-        .filter(
-            CartItemDB.user_id == current_user.id,
-            CartItemDB.product_id == product_id
-        )
+        .filter(CartItemDB.user_id == current_user.id, CartItemDB.product_id == product_id)
         .first()
     )
 
@@ -388,7 +551,7 @@ def delete_cart_item(
 @app.delete("/cart/clear", response_model=CartRead)
 def clear_cart_endpoint(
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     db.query(CartItemDB).filter(CartItemDB.user_id == current_user.id).delete()
     db.commit()
@@ -399,7 +562,7 @@ def clear_cart_endpoint(
 @app.post("/orders", response_model=OrderRead)
 def create_order(
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     cart_items = (
         db.query(CartItemDB)
@@ -415,7 +578,7 @@ def create_order(
         order_number=generate_order_number(),
         user_id=current_user.id,
         total=0,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
     )
     db.add(order)
     db.flush()
@@ -437,7 +600,7 @@ def create_order(
         if product.quantity < cart_item.quantity:
             raise HTTPException(
                 status_code=400,
-                detail=f"Stoc insuficient pentru produsul {product.name}"
+                detail=f"Stoc insuficient pentru produsul {product.name}",
             )
 
         line_total = product.price * cart_item.quantity
@@ -477,37 +640,35 @@ def create_order(
 @app.get("/orders/my", response_model=list[OrderRead])
 def get_my_orders(
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
-    orders = (
+    return (
         db.query(OrderDB)
         .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
         .filter(OrderDB.user_id == current_user.id)
         .order_by(OrderDB.id.desc())
         .all()
     )
-    return orders
 
 
 @app.get("/orders", response_model=list[OrderRead])
 def get_all_orders(
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(require_moderator_or_admin)
+    current_user: UserDB = Depends(require_moderator_or_admin),
 ):
-    orders = (
+    return (
         db.query(OrderDB)
         .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
         .order_by(OrderDB.id.desc())
         .all()
     )
-    return orders
 
 
 @app.get("/orders/{order_id}", response_model=OrderRead)
 def get_order_by_id(
     order_id: int,
     db: Session = Depends(get_db),
-    current_user: UserDB = Depends(get_current_user)
+    current_user: UserDB = Depends(get_current_user),
 ):
     order = (
         db.query(OrderDB)
@@ -526,3 +687,158 @@ def get_order_by_id(
         raise HTTPException(status_code=403, detail="Nu ai acces la aceasta comanda")
 
     return order
+
+
+# -------------------- TICKETS --------------------
+@app.post("/tickets", response_model=TicketDetailRead)
+def create_ticket(
+    payload: TicketCreate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    now = datetime.utcnow()
+    clean_message = payload.message.strip()
+    if not clean_message:
+        raise HTTPException(status_code=400, detail="Mesajul nu poate fi gol")
+
+    ticket = TicketDB(
+        ticket_number=generate_ticket_number(),
+        user_id=current_user.id,
+        category=payload.category,
+        status="open",
+        created_at=now,
+        updated_at=now,
+        last_message_at=now,
+    )
+    db.add(ticket)
+    db.flush()
+
+    message = TicketMessageDB(
+        ticket_id=ticket.id,
+        sender_id=current_user.id,
+        message=clean_message,
+        created_at=now,
+    )
+    db.add(message)
+    db.flush()
+
+    owner_state = TicketReadStateDB(
+        ticket_id=ticket.id,
+        user_id=current_user.id,
+        last_read_message_id=message.id,
+    )
+    db.add(owner_state)
+    db.commit()
+
+    saved_ticket = get_ticket_or_404(ticket.id, db)
+    return serialize_ticket_detail(saved_ticket)
+
+
+@app.get("/tickets/my", response_model=list[TicketListRead])
+def get_my_tickets(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    tickets = (
+        db.query(TicketDB)
+        .options(joinedload(TicketDB.user))
+        .filter(TicketDB.user_id == current_user.id)
+        .order_by(TicketDB.last_message_at.desc(), TicketDB.id.desc())
+        .all()
+    )
+    return [serialize_ticket_list(ticket, current_user, db) for ticket in tickets]
+
+
+@app.get("/tickets", response_model=list[TicketListRead])
+def get_all_tickets(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(require_moderator_or_admin),
+):
+    tickets = (
+        db.query(TicketDB)
+        .options(joinedload(TicketDB.user))
+        .order_by(TicketDB.last_message_at.desc(), TicketDB.id.desc())
+        .all()
+    )
+    return [serialize_ticket_list(ticket, current_user, db) for ticket in tickets]
+
+
+@app.get("/tickets/unread-count", response_model=TicketUnreadCountRead)
+def get_unread_ticket_count(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    return TicketUnreadCountRead(count=count_unread_tickets_for_user(db, current_user))
+
+
+@app.get("/tickets/{ticket_id}", response_model=TicketDetailRead)
+def get_ticket_detail(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    ticket = get_ticket_or_404(ticket_id, db)
+
+    if not can_access_ticket(ticket, current_user):
+        raise HTTPException(status_code=403, detail="Nu ai acces la acest tichet")
+
+    mark_ticket_as_read(ticket, current_user, db)
+    refreshed_ticket = get_ticket_or_404(ticket_id, db)
+    return serialize_ticket_detail(refreshed_ticket)
+
+
+@app.post("/tickets/{ticket_id}/messages", response_model=TicketDetailRead)
+def add_ticket_message(
+    ticket_id: int,
+    payload: TicketMessageCreate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    ticket = get_ticket_or_404(ticket_id, db)
+
+    if not can_access_ticket(ticket, current_user):
+        raise HTTPException(status_code=403, detail="Nu ai acces la acest tichet")
+
+    if ticket.status == "closed":
+        raise HTTPException(status_code=400, detail="Tichetul este inchis")
+
+    clean_message = payload.message.strip()
+    if not clean_message:
+        raise HTTPException(status_code=400, detail="Mesajul nu poate fi gol")
+
+    now = datetime.utcnow()
+    message = TicketMessageDB(
+        ticket_id=ticket.id,
+        sender_id=current_user.id,
+        message=clean_message,
+        created_at=now,
+    )
+    db.add(message)
+    db.flush()
+
+    ticket.updated_at = now
+    ticket.last_message_at = now
+
+    sender_state = get_or_create_read_state(ticket.id, current_user.id, db)
+    sender_state.last_read_message_id = message.id
+
+    db.commit()
+
+    saved_ticket = get_ticket_or_404(ticket.id, db)
+    return serialize_ticket_detail(saved_ticket)
+
+
+@app.patch("/tickets/{ticket_id}/close", response_model=TicketDetailRead)
+def close_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(require_moderator_or_admin),
+):
+    ticket = get_ticket_or_404(ticket_id, db)
+    now = datetime.utcnow()
+    ticket.status = "closed"
+    ticket.updated_at = now
+    db.commit()
+
+    saved_ticket = get_ticket_or_404(ticket.id, db)
+    return serialize_ticket_detail(saved_ticket)

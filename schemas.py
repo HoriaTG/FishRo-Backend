@@ -17,6 +17,16 @@ ProductCategory = Literal[
     "plute",
 ]
 
+TicketCategory = Literal[
+    "comanda",
+    "produs",
+    "plata",
+    "livrare",
+    "alta",
+]
+
+TicketStatus = Literal["open", "closed"]
+
 
 class ProductCreate(BaseModel):
     code: str = Field(..., min_length=1)
@@ -142,3 +152,52 @@ class CartItemRead(BaseModel):
 class CartRead(BaseModel):
     items: list[CartItemRead]
     total: float
+
+
+class TicketCreate(BaseModel):
+    category: TicketCategory
+    message: str = Field(..., min_length=1)
+
+
+class TicketMessageCreate(BaseModel):
+    message: str = Field(..., min_length=1)
+
+
+class TicketMessageRead(BaseModel):
+    id: int
+    ticket_id: int
+    sender_id: int
+    sender_username: str
+    sender_role: str
+    message: str
+    created_at: datetime | None = None
+
+
+class TicketListRead(BaseModel):
+    id: int
+    ticket_number: str
+    user_id: int
+    username: str
+    category: str
+    status: TicketStatus
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    last_message_at: datetime | None = None
+    has_unread: bool = False
+
+
+class TicketDetailRead(BaseModel):
+    id: int
+    ticket_number: str
+    user_id: int
+    username: str
+    category: str
+    status: TicketStatus
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    last_message_at: datetime | None = None
+    messages: list[TicketMessageRead]
+
+
+class TicketUnreadCountRead(BaseModel):
+    count: int

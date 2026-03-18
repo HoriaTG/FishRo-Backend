@@ -38,7 +38,7 @@ class OrderDB(Base):
 
     user = relationship("UserDB")
     items = relationship("OrderItemDB", back_populates="order")
-    
+
 
 class OrderItemDB(Base):
     __tablename__ = "order_items"
@@ -66,3 +66,54 @@ class CartItemDB(Base):
 
     user = relationship("UserDB")
     product = relationship("ProductDB")
+
+
+class TicketDB(Base):
+    __tablename__ = "tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_number = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    category = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="open")
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+    last_message_at = Column(DateTime, nullable=True)
+
+    user = relationship("UserDB")
+    messages = relationship(
+        "TicketMessageDB",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketMessageDB.created_at",
+    )
+    read_states = relationship(
+        "TicketReadStateDB",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+    )
+
+
+class TicketMessageDB(Base):
+    __tablename__ = "ticket_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    message = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=True)
+
+    ticket = relationship("TicketDB", back_populates="messages")
+    sender = relationship("UserDB")
+
+
+class TicketReadStateDB(Base):
+    __tablename__ = "ticket_read_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    last_read_message_id = Column(Integer, nullable=True)
+
+    ticket = relationship("TicketDB", back_populates="read_states")
+    user = relationship("UserDB")

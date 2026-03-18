@@ -1,7 +1,7 @@
 from db import SessionLocal
 from models import UserDB
 
-EMAIL = "moderator@fishro.com"   # schimbă cu emailul utilizatorului
+EMAIL = "moderator2@fishro.com"   # schimbă cu emailul utilizatorului
 
 db = SessionLocal()
 try:
