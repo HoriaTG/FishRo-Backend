@@ -25,7 +25,10 @@ bearer_scheme = HTTPBearer()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+        allow_origins=[
+        "http://localhost:4173",
+        "http://192.168.1.135:4173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
