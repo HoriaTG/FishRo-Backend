@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,15 +20,19 @@ from models import (
     UserDB,
 )
 from schemas import (
+    AssignableStaffRead,
     CartItemAdd,
     CartItemRead,
     CartItemUpdate,
     CartRead,
     OrderRead,
+    OrderStatusUpdate,
     ProductCreate,
     ProductRead,
     ProductUpdate,
+    TicketAssignPayload,
     TicketCreate,
+    TicketCreateAvailabilityRead,
     TicketDetailRead,
     TicketListRead,
     TicketMessageCreate,
@@ -57,6 +61,10 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
+TICKET_CREATE_COOLDOWN_HOURS = 12
+ORDER_STATUSES = {"trimisa", "confirmata", "in_tranzit", "livrata", "anulata"}
+PROMOTION_VALUES = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90}
+
 
 def get_db():
     db = SessionLocal()
@@ -79,8 +87,13 @@ def get_current_user(
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-
     return user
+
+
+def get_discounted_price(price: float, promotion: int | None) -> float:
+    promo = promotion or 0
+    promo = max(0, min(90, promo))
+    return round(price * (1 - promo / 100), 2)
 
 
 def require_admin(current_user: UserDB = Depends(get_current_user)) -> UserDB:
@@ -127,7 +140,8 @@ def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
             item.quantity = product.quantity
             changed = True
 
-        line_total = product.price * item.quantity
+        discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
+        line_total = discounted_price * item.quantity
         total += line_total
 
         result_items.append(
@@ -136,7 +150,7 @@ def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
                 product_id=product.id,
                 product_name=product.name,
                 product_code=product.code,
-                unit_price=product.price,
+                unit_price=discounted_price,
                 quantity=item.quantity,
                 stock=product.quantity,
                 image_url=f"/images/products/{product.code}.jpg",
@@ -161,6 +175,7 @@ def get_ticket_or_404(ticket_id: int, db: Session) -> TicketDB:
         db.query(TicketDB)
         .options(
             joinedload(TicketDB.user),
+            joinedload(TicketDB.assigned_to_user),
             joinedload(TicketDB.messages).joinedload(TicketMessageDB.sender),
         )
         .filter(TicketDB.id == ticket_id)
@@ -194,6 +209,22 @@ def ticket_has_unread_for_user(ticket: TicketDB, current_user: UserDB, db: Sessi
     if not latest_message:
         return False
 
+    if current_user.role in ["moderator", "admin"]:
+        if latest_message.sender_id == current_user.id:
+            return False
+
+        if latest_message.sender and latest_message.sender.role in ["moderator", "admin"]:
+            return False
+
+        staff_start = current_user.staff_notifications_start_at
+        if staff_start and latest_message.created_at and latest_message.created_at < staff_start:
+            return False
+
+        if ticket.staff_last_read_message_id is None:
+            return True
+
+        return ticket.staff_last_read_message_id < latest_message.id
+
     if latest_message.sender_id == current_user.id:
         return False
 
@@ -213,6 +244,13 @@ def ticket_has_unread_for_user(ticket: TicketDB, current_user: UserDB, db: Sessi
 
 
 def serialize_ticket_list(ticket: TicketDB, current_user: UserDB, db: Session) -> TicketListRead:
+    assigned_to_user_id = None
+    assigned_to_username = None
+
+    if current_user.role in ["moderator", "admin"]:
+        assigned_to_user_id = ticket.assigned_to_user_id
+        assigned_to_username = ticket.assigned_to_user.username if ticket.assigned_to_user else None
+
     return TicketListRead(
         id=ticket.id,
         ticket_number=ticket.ticket_number,
@@ -224,10 +262,19 @@ def serialize_ticket_list(ticket: TicketDB, current_user: UserDB, db: Session) -
         updated_at=ticket.updated_at,
         last_message_at=ticket.last_message_at,
         has_unread=ticket_has_unread_for_user(ticket, current_user, db),
+        assigned_to_user_id=assigned_to_user_id,
+        assigned_to_username=assigned_to_username,
     )
 
 
-def serialize_ticket_detail(ticket: TicketDB) -> TicketDetailRead:
+def serialize_ticket_detail(ticket: TicketDB, current_user: UserDB) -> TicketDetailRead:
+    assigned_to_user_id = None
+    assigned_to_username = None
+
+    if current_user.role in ["moderator", "admin"]:
+        assigned_to_user_id = ticket.assigned_to_user_id
+        assigned_to_username = ticket.assigned_to_user.username if ticket.assigned_to_user else None
+
     return TicketDetailRead(
         id=ticket.id,
         ticket_number=ticket.ticket_number,
@@ -238,6 +285,8 @@ def serialize_ticket_detail(ticket: TicketDB) -> TicketDetailRead:
         created_at=ticket.created_at,
         updated_at=ticket.updated_at,
         last_message_at=ticket.last_message_at,
+        assigned_to_user_id=assigned_to_user_id,
+        assigned_to_username=assigned_to_username,
         messages=[serialize_ticket_message(message) for message in ticket.messages],
     )
 
@@ -271,6 +320,17 @@ def mark_ticket_as_read(ticket: TicketDB, current_user: UserDB, db: Session) -> 
         db.commit()
 
 
+def mark_ticket_as_read_for_staff(ticket: TicketDB, current_user: UserDB, db: Session) -> None:
+    if not ticket.messages:
+        return
+
+    latest_message = max(ticket.messages, key=lambda message: message.id)
+
+    if ticket.staff_last_read_message_id != latest_message.id:
+        ticket.staff_last_read_message_id = latest_message.id
+        db.commit()
+
+
 def count_unread_tickets_for_user(db: Session, current_user: UserDB) -> int:
     latest_subquery = (
         db.query(
@@ -285,22 +345,76 @@ def count_unread_tickets_for_user(db: Session, current_user: UserDB) -> int:
         db.query(TicketDB.id)
         .join(latest_subquery, latest_subquery.c.ticket_id == TicketDB.id)
         .join(TicketMessageDB, TicketMessageDB.id == latest_subquery.c.latest_message_id)
-        .outerjoin(
-            TicketReadStateDB,
-            (TicketReadStateDB.ticket_id == TicketDB.id)
-            & (TicketReadStateDB.user_id == current_user.id),
-        )
-        .filter(TicketMessageDB.sender_id != current_user.id)
-        .filter(
-            (TicketReadStateDB.last_read_message_id.is_(None))
-            | (TicketReadStateDB.last_read_message_id < TicketMessageDB.id)
-        )
     )
 
-    if current_user.role == "user":
-        query = query.filter(TicketDB.user_id == current_user.id)
+    if current_user.role in ["moderator", "admin"]:
+        if current_user.staff_notifications_start_at is not None:
+            query = query.filter(
+                TicketMessageDB.created_at >= current_user.staff_notifications_start_at
+            )
+
+        query = query.filter(~TicketMessageDB.sender.has(UserDB.role.in_(["moderator", "admin"])))
+        query = query.filter(
+            (TicketDB.staff_last_read_message_id.is_(None))
+            | (TicketDB.staff_last_read_message_id < TicketMessageDB.id)
+        )
+
+        return query.distinct().count()
+
+    query = query.outerjoin(
+        TicketReadStateDB,
+        (TicketReadStateDB.ticket_id == TicketDB.id)
+        & (TicketReadStateDB.user_id == current_user.id),
+    )
+
+    query = query.filter(TicketDB.user_id == current_user.id)
+    query = query.filter(TicketMessageDB.sender_id != current_user.id)
+    query = query.filter(
+        (TicketReadStateDB.last_read_message_id.is_(None))
+        | (TicketReadStateDB.last_read_message_id < TicketMessageDB.id)
+    )
 
     return query.distinct().count()
+
+
+def get_ticket_create_availability(db: Session, current_user: UserDB) -> TicketCreateAvailabilityRead:
+    if current_user.role in ["moderator", "admin"]:
+        return TicketCreateAvailabilityRead(
+            can_create=True,
+            remaining_seconds=0,
+            next_allowed_at=None,
+        )
+
+    latest_ticket = (
+        db.query(TicketDB)
+        .filter(TicketDB.user_id == current_user.id)
+        .order_by(TicketDB.created_at.desc(), TicketDB.id.desc())
+        .first()
+    )
+
+    if not latest_ticket or not latest_ticket.created_at:
+        return TicketCreateAvailabilityRead(
+            can_create=True,
+            remaining_seconds=0,
+            next_allowed_at=None,
+        )
+
+    next_allowed_at = latest_ticket.created_at + timedelta(hours=TICKET_CREATE_COOLDOWN_HOURS)
+    now = datetime.utcnow()
+
+    if now >= next_allowed_at:
+        return TicketCreateAvailabilityRead(
+            can_create=True,
+            remaining_seconds=0,
+            next_allowed_at=next_allowed_at,
+        )
+
+    remaining_seconds = int((next_allowed_at - now).total_seconds())
+    return TicketCreateAvailabilityRead(
+        can_create=False,
+        remaining_seconds=max(0, remaining_seconds),
+        next_allowed_at=next_allowed_at,
+    )
 
 
 # -------------------- PRODUCTS --------------------
@@ -310,6 +424,9 @@ def create_product(
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user),
 ):
+    if payload.promotion not in PROMOTION_VALUES:
+        raise HTTPException(status_code=400, detail="Promotie invalida")
+
     existing = db.query(ProductDB).filter(ProductDB.code == payload.code).first()
 
     if existing:
@@ -317,6 +434,7 @@ def create_product(
         existing.name = payload.name
         existing.category = payload.category
         existing.price = payload.price
+        existing.promotion = payload.promotion
 
         if payload.description is not None:
             existing.description = payload.description
@@ -335,6 +453,7 @@ def create_product(
         category=payload.category,
         price=payload.price,
         quantity=payload.quantity,
+        promotion=payload.promotion,
         description=payload.description,
         tech_details=payload.tech_details,
         video_url=payload.video_url,
@@ -373,6 +492,9 @@ def update_product(
         raise HTTPException(status_code=404, detail="Produs inexistent")
 
     data = payload.model_dump(exclude_unset=True)
+
+    if "promotion" in data and data["promotion"] not in PROMOTION_VALUES:
+        raise HTTPException(status_code=400, detail="Promotie invalida")
 
     for key, value in data.items():
         setattr(product, key, value)
@@ -579,6 +701,7 @@ def create_order(
         user_id=current_user.id,
         total=0,
         created_at=datetime.utcnow(),
+        status="trimisa",
     )
     db.add(order)
     db.flush()
@@ -603,14 +726,15 @@ def create_order(
                 detail=f"Stoc insuficient pentru produsul {product.name}",
             )
 
-        line_total = product.price * cart_item.quantity
+        discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
+        line_total = discounted_price * cart_item.quantity
 
         order_item = OrderItemDB(
             order_id=order.id,
             product_id=product.id,
             product_name=product.name,
             product_code=product.code,
-            unit_price=product.price,
+            unit_price=discounted_price,
             quantity=cart_item.quantity,
             line_total=line_total,
         )
@@ -689,13 +813,60 @@ def get_order_by_id(
     return order
 
 
+@app.patch("/orders/{order_id}/status", response_model=OrderRead)
+def update_order_status(
+    order_id: int,
+    payload: OrderStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(require_moderator_or_admin),
+):
+    if payload.status not in ORDER_STATUSES:
+        raise HTTPException(status_code=400, detail="Status invalid")
+
+    order = (
+        db.query(OrderDB)
+        .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
+        .filter(OrderDB.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Comanda nu exista")
+
+    order.status = payload.status
+    db.commit()
+    db.refresh(order)
+    return order
+
+
 # -------------------- TICKETS --------------------
+@app.get("/tickets/create-availability", response_model=TicketCreateAvailabilityRead)
+def get_ticket_create_availability_endpoint(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    return get_ticket_create_availability(db, current_user)
+
+
 @app.post("/tickets", response_model=TicketDetailRead)
 def create_ticket(
     payload: TicketCreate,
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user),
 ):
+    availability = get_ticket_create_availability(db, current_user)
+    if not availability.can_create:
+        hours = availability.remaining_seconds // 3600
+        minutes = (availability.remaining_seconds % 3600) // 60
+        seconds = availability.remaining_seconds % 60
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Poți deschide un nou tichet peste "
+                f"{hours:02d}:{minutes:02d}:{seconds:02d}."
+            ),
+        )
+
     now = datetime.utcnow()
     clean_message = payload.message.strip()
     if not clean_message:
@@ -709,6 +880,7 @@ def create_ticket(
         created_at=now,
         updated_at=now,
         last_message_at=now,
+        assigned_to_user_id=None,
     )
     db.add(ticket)
     db.flush()
@@ -731,7 +903,7 @@ def create_ticket(
     db.commit()
 
     saved_ticket = get_ticket_or_404(ticket.id, db)
-    return serialize_ticket_detail(saved_ticket)
+    return serialize_ticket_detail(saved_ticket, current_user)
 
 
 @app.get("/tickets/my", response_model=list[TicketListRead])
@@ -741,7 +913,7 @@ def get_my_tickets(
 ):
     tickets = (
         db.query(TicketDB)
-        .options(joinedload(TicketDB.user))
+        .options(joinedload(TicketDB.user), joinedload(TicketDB.assigned_to_user))
         .filter(TicketDB.user_id == current_user.id)
         .order_by(TicketDB.last_message_at.desc(), TicketDB.id.desc())
         .all()
@@ -756,7 +928,7 @@ def get_all_tickets(
 ):
     tickets = (
         db.query(TicketDB)
-        .options(joinedload(TicketDB.user))
+        .options(joinedload(TicketDB.user), joinedload(TicketDB.assigned_to_user))
         .order_by(TicketDB.last_message_at.desc(), TicketDB.id.desc())
         .all()
     )
@@ -771,6 +943,19 @@ def get_unread_ticket_count(
     return TicketUnreadCountRead(count=count_unread_tickets_for_user(db, current_user))
 
 
+@app.get("/tickets/assignable-users", response_model=list[AssignableStaffRead])
+def get_assignable_users(
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(require_moderator_or_admin),
+):
+    return (
+        db.query(UserDB)
+        .filter(UserDB.role.in_(["moderator", "admin"]))
+        .order_by(UserDB.role.asc(), UserDB.username.asc())
+        .all()
+    )
+
+
 @app.get("/tickets/{ticket_id}", response_model=TicketDetailRead)
 def get_ticket_detail(
     ticket_id: int,
@@ -782,9 +967,13 @@ def get_ticket_detail(
     if not can_access_ticket(ticket, current_user):
         raise HTTPException(status_code=403, detail="Nu ai acces la acest tichet")
 
-    mark_ticket_as_read(ticket, current_user, db)
+    if current_user.role in ["moderator", "admin"]:
+        mark_ticket_as_read_for_staff(ticket, current_user, db)
+    else:
+        mark_ticket_as_read(ticket, current_user, db)
+
     refreshed_ticket = get_ticket_or_404(ticket_id, db)
-    return serialize_ticket_detail(refreshed_ticket)
+    return serialize_ticket_detail(refreshed_ticket, current_user)
 
 
 @app.post("/tickets/{ticket_id}/messages", response_model=TicketDetailRead)
@@ -819,13 +1008,53 @@ def add_ticket_message(
     ticket.updated_at = now
     ticket.last_message_at = now
 
-    sender_state = get_or_create_read_state(ticket.id, current_user.id, db)
-    sender_state.last_read_message_id = message.id
+    if current_user.role in ["moderator", "admin"]:
+        ticket.staff_last_read_message_id = message.id
+    else:
+        ticket.staff_last_read_message_id = None
+        sender_state = get_or_create_read_state(ticket.id, current_user.id, db)
+        sender_state.last_read_message_id = message.id
 
     db.commit()
 
     saved_ticket = get_ticket_or_404(ticket.id, db)
-    return serialize_ticket_detail(saved_ticket)
+    return serialize_ticket_detail(saved_ticket, current_user)
+
+
+@app.patch("/tickets/{ticket_id}/assign", response_model=TicketDetailRead)
+def assign_ticket(
+    ticket_id: int,
+    payload: TicketAssignPayload,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(require_moderator_or_admin),
+):
+    ticket = get_ticket_or_404(ticket_id, db)
+
+    if payload.assigned_to_user_id is None:
+        ticket.assigned_to_user_id = None
+        ticket.updated_at = datetime.utcnow()
+        db.commit()
+        saved_ticket = get_ticket_or_404(ticket.id, db)
+        return serialize_ticket_detail(saved_ticket, current_user)
+
+    staff_user = (
+        db.query(UserDB)
+        .filter(
+            UserDB.id == payload.assigned_to_user_id,
+            UserDB.role.in_(["moderator", "admin"]),
+        )
+        .first()
+    )
+
+    if not staff_user:
+        raise HTTPException(status_code=404, detail="Responsabilul selectat nu exista")
+
+    ticket.assigned_to_user_id = staff_user.id
+    ticket.updated_at = datetime.utcnow()
+    db.commit()
+
+    saved_ticket = get_ticket_or_404(ticket.id, db)
+    return serialize_ticket_detail(saved_ticket, current_user)
 
 
 @app.patch("/tickets/{ticket_id}/close", response_model=TicketDetailRead)
@@ -841,4 +1070,4 @@ def close_ticket(
     db.commit()
 
     saved_ticket = get_ticket_or_404(ticket.id, db)
-    return serialize_ticket_detail(saved_ticket)
+    return serialize_ticket_detail(saved_ticket, current_user)

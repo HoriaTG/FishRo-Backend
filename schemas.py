@@ -27,6 +27,8 @@ TicketCategory = Literal[
 
 TicketStatus = Literal["open", "closed"]
 
+OrderStatus = Literal["trimisa", "confirmata", "in_tranzit", "livrata", "anulata"]
+
 
 class ProductCreate(BaseModel):
     code: str = Field(..., min_length=1)
@@ -34,6 +36,7 @@ class ProductCreate(BaseModel):
     category: ProductCategory
     price: float
     quantity: int = 0
+    promotion: int = 0
     description: str | None = None
     tech_details: str | None = None
     video_url: str | None = None
@@ -46,6 +49,7 @@ class ProductRead(BaseModel):
     category: ProductCategory
     price: float
     quantity: int
+    promotion: int = 0
     description: str | None = None
     tech_details: str | None = None
     video_url: str | None = None
@@ -85,6 +89,7 @@ class ProductUpdate(BaseModel):
     category: Optional[ProductCategory] = None
     price: Optional[float] = None
     quantity: Optional[int] = None
+    promotion: Optional[int] = None
     description: Optional[str] = None
     tech_details: Optional[str] = None
     video_url: Optional[str] = None
@@ -117,12 +122,17 @@ class OrderRead(BaseModel):
     order_number: str
     user_id: int
     total: float
+    status: OrderStatus
     created_at: datetime | None = None
     user: UserRead | None = None
     items: list[OrderItemRead]
 
     class Config:
         from_attributes = True
+
+
+class OrderStatusUpdate(BaseModel):
+    status: OrderStatus
 
 
 class CartItemAdd(BaseModel):
@@ -184,6 +194,8 @@ class TicketListRead(BaseModel):
     updated_at: datetime | None = None
     last_message_at: datetime | None = None
     has_unread: bool = False
+    assigned_to_user_id: int | None = None
+    assigned_to_username: str | None = None
 
 
 class TicketDetailRead(BaseModel):
@@ -196,8 +208,31 @@ class TicketDetailRead(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     last_message_at: datetime | None = None
+    assigned_to_user_id: int | None = None
+    assigned_to_username: str | None = None
     messages: list[TicketMessageRead]
 
 
 class TicketUnreadCountRead(BaseModel):
     count: int
+
+
+class TicketAssignPayload(BaseModel):
+    assigned_to_user_id: int | None = None
+
+
+class AssignableStaffRead(BaseModel):
+    id: int
+    username: str
+    role: str
+
+    class Config:
+        from_attributes = True
+
+
+class TicketCreateAvailabilityRead(BaseModel):
+    can_create: bool
+    remaining_seconds: int
+    next_allowed_at: datetime | None = None
+
+

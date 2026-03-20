@@ -12,6 +12,7 @@ class ProductDB(Base):
     category = Column(String, nullable=False)
     price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False, default=0)
+    promotion = Column(Integer, nullable=False, default=0)
     description = Column(String, nullable=True)
     tech_details = Column(String, nullable=True)
     video_url = Column(String, nullable=True)
@@ -25,6 +26,7 @@ class UserDB(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     role = Column(String, nullable=False, default="user")
+    staff_notifications_start_at = Column(DateTime, nullable=True)
 
 
 class OrderDB(Base):
@@ -35,6 +37,7 @@ class OrderDB(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     total = Column(Float, nullable=False, default=0)
     created_at = Column(DateTime, nullable=True)
+    status = Column(String, nullable=False, default="trimisa")
 
     user = relationship("UserDB")
     items = relationship("OrderItemDB", back_populates="order")
@@ -79,8 +82,12 @@ class TicketDB(Base):
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
     last_message_at = Column(DateTime, nullable=True)
+    assigned_to_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    staff_last_read_message_id = Column(Integer, nullable=True)
 
-    user = relationship("UserDB")
+    user = relationship("UserDB", foreign_keys=[user_id])
+    assigned_to_user = relationship("UserDB", foreign_keys=[assigned_to_user_id])
+
     messages = relationship(
         "TicketMessageDB",
         back_populates="ticket",
