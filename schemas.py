@@ -236,3 +236,38 @@ class TicketCreateAvailabilityRead(BaseModel):
     next_allowed_at: datetime | None = None
 
 
+class AssistantContextProduct(BaseModel):
+    id: int
+    name: str
+    category: str
+    price: float
+    discounted_price: float
+    promotion: int = 0
+    image_url: str | None = None
+
+
+class AssistantChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    context_products: list[AssistantContextProduct] = []
+    focused_product: AssistantContextProduct | None = None
+
+
+class AssistantProductSuggestion(BaseModel):
+    id: int
+    name: str
+    category: str
+    price: float
+    discounted_price: float
+    promotion: int = 0
+    image_url: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class AssistantChatResponse(BaseModel):
+    reply: str
+    intent: str
+    requires_login: bool = False
+    suggestions: list[str] = []
+    products: list[AssistantProductSuggestion] = []
