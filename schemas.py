@@ -101,7 +101,12 @@ class OrderCreateItem(BaseModel):
 
 
 class OrderCreate(BaseModel):
-    items: list[OrderCreateItem]
+    first_name: str
+    last_name: str
+    address: str
+    phone: str
+    email: str
+    payment_method: Literal["card", "ramburs"]
 
 
 class OrderItemRead(BaseModel):
@@ -124,6 +129,14 @@ class OrderRead(BaseModel):
     total: float
     status: OrderStatus
     created_at: datetime | None = None
+
+    first_name: str | None = None
+    last_name: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    payment_method: str | None = None
+
     user: UserRead | None = None
     items: list[OrderItemRead]
 

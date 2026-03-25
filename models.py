@@ -35,9 +35,18 @@ class OrderDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     order_number = Column(String, unique=True, index=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
     total = Column(Float, nullable=False, default=0)
     created_at = Column(DateTime, nullable=True)
     status = Column(String, nullable=False, default="trimisa")
+
+    # 🔥 NOI – DATE LIVRARE
+    first_name = Column(String, nullable=False)
+    last_name = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    payment_method = Column(String, nullable=False)  # "card" / "ramburs"
 
     user = relationship("UserDB")
     items = relationship("OrderItemDB", back_populates="order")

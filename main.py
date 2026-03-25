@@ -34,6 +34,7 @@ from schemas import (
     CartItemRead,
     CartItemUpdate,
     CartRead,
+    OrderCreate,
     OrderRead,
     OrderStatusUpdate,
     ProductCreate,
@@ -62,7 +63,7 @@ app.add_middleware(
         "http://192.168.1.135:4173",
         "http://127.0.0.1:4173",
         "http://192.168.1.131:4173",
-        "http://192.168.0.107:4173",
+        "http://192.168.0.101:4173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -104,6 +105,7 @@ def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
             item.quantity = product.quantity
             changed = True
 
+        discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
         discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
         line_total = discounted_price * item.quantity
         total += line_total
@@ -640,6 +642,7 @@ def clear_cart_endpoint(
 # -------------------- ORDERS --------------------
 @app.post("/orders", response_model=OrderRead)
 def create_order(
+    order: OrderCreate,
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user),
 ):
@@ -653,65 +656,65 @@ def create_order(
     if not cart_items:
         raise HTTPException(status_code=400, detail="Cosul este gol")
 
-    order = OrderDB(
-        order_number=generate_order_number(),
-        user_id=current_user.id,
-        total=0,
-        created_at=datetime.utcnow(),
-        status="trimisa",
-    )
-    db.add(order)
-    db.flush()
-
     total = 0.0
-    items_to_delete = []
+    order_items = []
 
-    for cart_item in cart_items:
-        product = cart_item.product
+    for item in cart_items:
+        product = item.product
 
         if not product:
-            items_to_delete.append(cart_item)
             continue
 
-        if cart_item.quantity <= 0:
-            items_to_delete.append(cart_item)
-            continue
-
-        if product.quantity < cart_item.quantity:
+        if product.quantity < item.quantity:
             raise HTTPException(
                 status_code=400,
                 detail=f"Stoc insuficient pentru produsul {product.name}",
             )
 
         discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
-        line_total = discounted_price * cart_item.quantity
+        line_total = discounted_price * item.quantity
+        total += line_total
 
         order_item = OrderItemDB(
-            order_id=order.id,
             product_id=product.id,
             product_name=product.name,
             product_code=product.code,
             unit_price=discounted_price,
-            quantity=cart_item.quantity,
+            quantity=item.quantity,
             line_total=line_total,
         )
-        db.add(order_item)
+        order_items.append(order_item)
 
-        product.quantity -= cart_item.quantity
-        total += line_total
-        items_to_delete.append(cart_item)
+        product.quantity -= item.quantity
 
-    order.total = total
+    new_order = OrderDB(
+        order_number=generate_order_number(),
+        user_id=current_user.id,
+        total=total,
+        created_at=datetime.utcnow(),
+        status="trimisa",
+        first_name=order.first_name,
+        last_name=order.last_name,
+        address=order.address,
+        phone=order.phone,
+        email=order.email,
+        payment_method=order.payment_method,
+    )
 
-    for item in items_to_delete:
-        db.delete(item)
+    db.add(new_order)
+    db.flush()
 
+    for oi in order_items:
+      oi.order_id = new_order.id
+      db.add(oi)
+
+    db.query(CartItemDB).filter(CartItemDB.user_id == current_user.id).delete()
     db.commit()
 
     saved_order = (
         db.query(OrderDB)
         .options(joinedload(OrderDB.items), joinedload(OrderDB.user))
-        .filter(OrderDB.id == order.id)
+        .filter(OrderDB.id == new_order.id)
         .first()
     )
 
