@@ -21,6 +21,7 @@ from models import (
     OrderDB,
     OrderItemDB,
     ProductDB,
+    ReviewDB,
     TicketDB,
     TicketMessageDB,
     TicketReadStateDB,
@@ -39,7 +40,10 @@ from schemas import (
     OrderStatusUpdate,
     ProductCreate,
     ProductRead,
+    ProductReviewsRead,
     ProductUpdate,
+    ReviewCreate,
+    ReviewRead,
     TicketAssignPayload,
     TicketCreate,
     TicketCreateAvailabilityRead,
@@ -80,6 +84,83 @@ def generate_order_number() -> str:
 def generate_ticket_number() -> str:
     return f"TCK-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
+def attach_product_rating_summary(product: ProductDB, db: Session) -> ProductDB:
+    reviews = db.query(ReviewDB).filter(ReviewDB.product_id == product.id).all()
+    review_count = len(reviews)
+    average_rating = (
+        round(sum(review.rating for review in reviews) / review_count, 1)
+        if review_count > 0
+        else 0.0
+    )
+
+    product.average_rating = average_rating
+    product.review_count = review_count
+    return product
+
+
+def user_has_purchased_product(db: Session, user_id: int, product_id: int) -> bool:
+    purchased_item = (
+        db.query(OrderItemDB.id)
+        .join(OrderDB, OrderDB.id == OrderItemDB.order_id)
+        .filter(
+            OrderDB.user_id == user_id,
+            OrderItemDB.product_id == product_id,
+            OrderDB.status != "anulata",
+        )
+        .first()
+    )
+    return purchased_item is not None
+
+
+def serialize_review(review: ReviewDB, current_user: UserDB | None = None) -> ReviewRead:
+    return ReviewRead(
+        id=review.id,
+        product_id=review.product_id,
+        user_id=review.user_id,
+        username=review.user.username if review.user else "-",
+        rating=review.rating,
+        comment=review.comment,
+        created_at=review.created_at,
+        updated_at=review.updated_at,
+        is_mine=bool(current_user and current_user.id == review.user_id),
+    )
+
+
+def build_product_reviews_response(
+    product_id: int,
+    db: Session,
+    current_user: UserDB | None = None,
+) -> ProductReviewsRead:
+    reviews = (
+        db.query(ReviewDB)
+        .options(joinedload(ReviewDB.user))
+        .filter(ReviewDB.product_id == product_id)
+        .order_by(ReviewDB.updated_at.desc(), ReviewDB.created_at.desc(), ReviewDB.id.desc())
+        .all()
+    )
+
+    total_reviews = len(reviews)
+    average_rating = (
+        round(sum(review.rating for review in reviews) / total_reviews, 2)
+        if total_reviews > 0
+        else 0.0
+    )
+
+    has_purchased = False
+    can_review = False
+
+    if current_user:
+        has_purchased = user_has_purchased_product(db, current_user.id, product_id)
+        can_review = has_purchased
+
+    return ProductReviewsRead(
+        average_rating=average_rating,
+        total_reviews=total_reviews,
+        has_purchased=has_purchased,
+        can_review=can_review,
+        reviews=[serialize_review(review, current_user) for review in reviews],
+    )
+
 
 def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
     cart_items = (
@@ -105,7 +186,6 @@ def build_cart_response(db: Session, current_user: UserDB) -> CartRead:
             item.quantity = product.quantity
             changed = True
 
-        discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
         discounted_price = get_discounted_price(product.price, getattr(product, "promotion", 0))
         line_total = discounted_price * item.quantity
         total += line_total
@@ -432,7 +512,8 @@ def create_product(
 
 @app.get("/products", response_model=list[ProductRead])
 def get_products(db: Session = Depends(get_db)):
-    return db.query(ProductDB).all()
+    products = db.query(ProductDB).all()
+    return [attach_product_rating_summary(product, db) for product in products]
 
 
 @app.get("/products/{product_id}", response_model=ProductRead)
@@ -440,7 +521,88 @@ def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
     product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Produsul nu exista")
-    return product
+    return attach_product_rating_summary(product, db)
+
+
+@app.get("/products/{product_id}/reviews", response_model=ProductReviewsRead)
+def get_product_reviews(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB | None = Depends(get_optional_current_user),
+):
+    product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produsul nu exista")
+
+    return build_product_reviews_response(
+        product_id=product_id,
+        db=db,
+        current_user=current_user,
+    )
+
+
+@app.post("/products/{product_id}/reviews", response_model=ReviewRead)
+def create_or_update_product_review(
+    product_id: int,
+    payload: ReviewCreate,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produsul nu exista")
+
+    if not user_has_purchased_product(db, current_user.id, product_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Poți lăsa o recenzie doar după ce ai cumpărat produsul",
+        )
+
+    clean_comment = (payload.comment or "").strip()
+
+    now = datetime.utcnow()
+
+    existing_review = (
+        db.query(ReviewDB)
+        .filter(
+            ReviewDB.product_id == product_id,
+            ReviewDB.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if existing_review:
+        existing_review.rating = payload.rating
+        existing_review.comment = clean_comment
+        existing_review.updated_at = now
+        db.commit()
+
+        saved_review = (
+            db.query(ReviewDB)
+            .options(joinedload(ReviewDB.user))
+            .filter(ReviewDB.id == existing_review.id)
+            .first()
+        )
+        return serialize_review(saved_review, current_user)
+
+    review = ReviewDB(
+        product_id=product_id,
+        user_id=current_user.id,
+        rating=payload.rating,
+        comment=clean_comment,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(review)
+    db.commit()
+
+    saved_review = (
+        db.query(ReviewDB)
+        .options(joinedload(ReviewDB.user))
+        .filter(ReviewDB.id == review.id)
+        .first()
+    )
+    return serialize_review(saved_review, current_user)
 
 
 @app.patch("/products/{product_id}", response_model=ProductRead)
@@ -705,8 +867,8 @@ def create_order(
     db.flush()
 
     for oi in order_items:
-      oi.order_id = new_order.id
-      db.add(oi)
+        oi.order_id = new_order.id
+        db.add(oi)
 
     db.query(CartItemDB).filter(CartItemDB.user_id == current_user.id).delete()
     db.commit()

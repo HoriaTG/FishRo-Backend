@@ -53,10 +53,11 @@ class ProductRead(BaseModel):
     description: str | None = None
     tech_details: str | None = None
     video_url: str | None = None
+    average_rating: float = 0.0
+    review_count: int = 0
 
     class Config:
         from_attributes = True
-
 
 class UserCreate(BaseModel):
     username: str
@@ -93,11 +94,6 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = None
     tech_details: Optional[str] = None
     video_url: Optional[str] = None
-
-
-class OrderCreateItem(BaseModel):
-    product_id: int
-    quantity: int
 
 
 class OrderCreate(BaseModel):
@@ -175,6 +171,31 @@ class CartItemRead(BaseModel):
 class CartRead(BaseModel):
     items: list[CartItemRead]
     total: float
+
+
+class ReviewCreate(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    comment: str = Field(default="", max_length=1000)
+
+
+class ReviewRead(BaseModel):
+    id: int
+    product_id: int
+    user_id: int
+    username: str
+    rating: int
+    comment: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    is_mine: bool = False
+
+
+class ProductReviewsRead(BaseModel):
+    average_rating: float
+    total_reviews: int
+    has_purchased: bool
+    can_review: bool
+    reviews: list[ReviewRead]
 
 
 class TicketCreate(BaseModel):
